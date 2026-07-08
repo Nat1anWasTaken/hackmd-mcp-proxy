@@ -46,6 +46,7 @@ mod tests {
             environment: crate::config::Environment::Test,
             log_format: crate::config::LogFormat::Pretty,
             upstream_mcp_url: "http://127.0.0.1:4000".to_owned(),
+            local_hackmd_api_token: None,
             connect_timeout: std::time::Duration::from_secs(1),
             request_timeout: std::time::Duration::from_secs(1),
         }

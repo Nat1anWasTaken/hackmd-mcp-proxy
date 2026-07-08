@@ -9,6 +9,7 @@ pub struct Config {
     pub environment: Environment,
     pub log_format: LogFormat,
     pub upstream_mcp_url: String,
+    pub local_hackmd_api_token: Option<String>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
 }
@@ -33,6 +34,7 @@ impl Config {
         let environment = Environment::parse(&env_var("APP_ENV", "development"))?;
         let log_format = LogFormat::parse(&env_var("LOG_FORMAT", "pretty"))?;
         let upstream_mcp_url = env_var("HACKMD_MCP_URL", "https://mcp.hackmd.io");
+        let local_hackmd_api_token = optional_env_var("HACKMD_API_TOKEN");
         let connect_timeout = duration_seconds("UPSTREAM_CONNECT_TIMEOUT_SECONDS", 10)?;
         let request_timeout = duration_seconds("UPSTREAM_REQUEST_TIMEOUT_SECONDS", 30)?;
 
@@ -46,6 +48,7 @@ impl Config {
             environment,
             log_format,
             upstream_mcp_url: upstream_mcp_url.trim_end_matches('/').to_owned(),
+            local_hackmd_api_token,
             connect_timeout,
             request_timeout,
         })
@@ -79,6 +82,13 @@ impl LogFormat {
 
 fn env_var(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn optional_env_var(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn duration_seconds(name: &str, default: u64) -> anyhow::Result<Duration> {

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod hackmd;
 pub mod observability;
 pub mod routes;
 pub mod state;

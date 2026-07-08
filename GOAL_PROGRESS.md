@@ -5,7 +5,7 @@ Objective: fully implement the HackMD MCP OAuth Wrapper described in `SPEC.md`.
 ## Milestone Checklist
 
 - [x] Stage 0: Create the Rust workspace, Axum server shell, health endpoint, configuration, observability, Docker/dev config, and baseline tests.
-- [ ] Stage 1: Implement Streamable HTTP `/mcp` proxy correctness with request/response header filtering, streaming passthrough, upstream timeout handling, and local-token proof-of-concept support.
+- [x] Stage 1: Implement Streamable HTTP `/mcp` proxy correctness with request/response header filtering, streaming passthrough, upstream timeout handling, and local-token proof-of-concept support.
 - [ ] Stage 2: Implement OAuth protected-resource metadata, authorization-server metadata, Dynamic Client Registration, authorization-code + PKCE, opaque bearer tokens, revocation, and `/mcp` bearer validation.
 - [ ] Stage 3: Implement PostgreSQL schema, SQLx repositories, encrypted HackMD token vault, token fingerprinting, web sessions, single-user login, CSRF, HackMD token verification, connection/settings APIs, disconnect behavior, and audit logs.
 - [ ] Stage 4: Implement policy guard for JSON-RPC `tools/call`, scope checks, access-mode checks, default delete blocking, strict allowlist option, and policy tests.
@@ -77,11 +77,15 @@ The repository currently contains only `SPEC.md` and an empty `README.md`; there
   - `rtk cargo fmt --all --check` -> passed
   - `rtk cargo test --workspace` -> passed, 1 test
   - `rtk cargo clippy --workspace --all-targets -- -D warnings` -> passed
+- Stage 1:
+  - `rtk cargo fmt --all --check` -> passed
+  - `rtk cargo test --workspace` -> passed, 5 tests
+  - `rtk cargo clippy --workspace --all-targets -- -D warnings` -> passed
 
 ## Commits
 
-- Pending.
+- Stage 0: `d0fab83 chore: add stage 0 rust workspace scaffold`
 
 ## Remaining Follow-Up
 
-- Pending until implementation stages begin.
+- Stage 2 begins with OAuth metadata, DCR, authorization-code + PKCE, opaque access tokens, and bearer enforcement for `/mcp`.
