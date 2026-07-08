@@ -1,5 +1,6 @@
 pub mod config;
 pub mod hackmd;
+pub mod oauth;
 pub mod observability;
 pub mod routes;
 pub mod state;

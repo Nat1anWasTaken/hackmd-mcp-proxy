@@ -47,8 +47,13 @@ mod tests {
             log_format: crate::config::LogFormat::Pretty,
             upstream_mcp_url: "http://127.0.0.1:4000".to_owned(),
             local_hackmd_api_token: None,
+            oauth_access_token_hash_key: "test-access-key".to_owned(),
+            oauth_authorization_code_hash_key: "test-code-key".to_owned(),
+            oauth_auto_approve: true,
             connect_timeout: std::time::Duration::from_secs(1),
             request_timeout: std::time::Duration::from_secs(1),
+            access_token_ttl: std::time::Duration::from_secs(3600),
+            authorization_code_ttl: std::time::Duration::from_secs(300),
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::config::Config;
+use crate::{config::Config, oauth::store::OAuthStore};
 
 #[derive(Clone, Debug)]
 pub struct AppState {
@@ -11,6 +11,7 @@ pub struct AppState {
 struct AppStateInner {
     config: Config,
     http_client: reqwest::Client,
+    oauth_store: OAuthStore,
 }
 
 impl AppState {
@@ -28,6 +29,7 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 config,
                 http_client,
+                oauth_store: OAuthStore::default(),
             }),
         }
     }
@@ -38,5 +40,9 @@ impl AppState {
 
     pub fn http_client(&self) -> &reqwest::Client {
         &self.inner.http_client
+    }
+
+    pub fn oauth_store(&self) -> &OAuthStore {
+        &self.inner.oauth_store
     }
 }

@@ -6,7 +6,7 @@ Objective: fully implement the HackMD MCP OAuth Wrapper described in `SPEC.md`.
 
 - [x] Stage 0: Create the Rust workspace, Axum server shell, health endpoint, configuration, observability, Docker/dev config, and baseline tests.
 - [x] Stage 1: Implement Streamable HTTP `/mcp` proxy correctness with request/response header filtering, streaming passthrough, upstream timeout handling, and local-token proof-of-concept support.
-- [ ] Stage 2: Implement OAuth protected-resource metadata, authorization-server metadata, Dynamic Client Registration, authorization-code + PKCE, opaque bearer tokens, revocation, and `/mcp` bearer validation.
+- [x] Stage 2: Implement OAuth protected-resource metadata, authorization-server metadata, Dynamic Client Registration, authorization-code + PKCE, opaque bearer tokens, revocation, and `/mcp` bearer validation.
 - [ ] Stage 3: Implement PostgreSQL schema, SQLx repositories, encrypted HackMD token vault, token fingerprinting, web sessions, single-user login, CSRF, HackMD token verification, connection/settings APIs, disconnect behavior, and audit logs.
 - [ ] Stage 4: Implement policy guard for JSON-RPC `tools/call`, scope checks, access-mode checks, default delete blocking, strict allowlist option, and policy tests.
 - [ ] Stage 5: Implement MCP session binding for upstream `MCP-Session-Id`, GET/POST validation, DELETE session teardown, and mismatch handling.
@@ -81,11 +81,16 @@ The repository currently contains only `SPEC.md` and an empty `README.md`; there
   - `rtk cargo fmt --all --check` -> passed
   - `rtk cargo test --workspace` -> passed, 5 tests
   - `rtk cargo clippy --workspace --all-targets -- -D warnings` -> passed
+- Stage 2:
+  - `rtk cargo fmt --all --check` -> passed
+  - `rtk cargo test --workspace` -> passed, 16 tests
+  - `rtk cargo clippy --workspace --all-targets -- -D warnings` -> passed
 
 ## Commits
 
 - Stage 0: `d0fab83 chore: add stage 0 rust workspace scaffold`
+- Stage 1: `e4fe37d feat(server): add stage 1 /mcp stream proxy transport`
 
 ## Remaining Follow-Up
 
-- Stage 2 begins with OAuth metadata, DCR, authorization-code + PKCE, opaque access tokens, and bearer enforcement for `/mcp`.
+- Stage 3 begins with PostgreSQL schema, SQLx repositories, encrypted HackMD token vault, single-user web sessions, connection/settings APIs, disconnect, and audit logs.
