@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+      DATABASE_URL: sqlite:///data/hackmd-mcp-proxy.db
+      APP_ENV: production
+      LOG_FORMAT: json
+    expose:
+      - "3000"
+    volumes:
+      - hackmd-mcp-proxy-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hackmd-mcp-proxy-data:

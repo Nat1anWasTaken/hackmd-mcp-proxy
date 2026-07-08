@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+      DATABASE_URL: sqlite:///data/hackmd-mcp-proxy.db
+      APP_ENV: production
+      LOG_FORMAT: json
+    expose:
+      - "3000"
+    volumes:
+      - hackmd-mcp-proxy-data:/data
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.hackmd-mcp-proxy.rule=Host(`${DOKPLOY_DOMAIN:?set DOKPLOY_DOMAIN in Dokploy environment}`)
+      - traefik.http.routers.hackmd-mcp-proxy.entrypoints=websecure
+      - traefik.http.routers.hackmd-mcp-proxy.tls.certresolver=letsencrypt
+      - traefik.http.services.hackmd-mcp-proxy.loadbalancer.server.port=3000
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hackmd-mcp-proxy-data:
+
+networks:
+  dokploy-network:
+    external: true

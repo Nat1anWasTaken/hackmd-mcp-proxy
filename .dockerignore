@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+!.env.dokploy.example
+.git
+.gitignore
+target
+*.db
+*.db-*
+docker-compose*.yml
+README.md
