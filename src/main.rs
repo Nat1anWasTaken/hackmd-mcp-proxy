@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::Context;
-use hackmd_mcp_server::{build_router, config::Config, observability, state::AppState};
+use hackmd_mcp_proxy::{build_router, config::Config, observability, state::AppState};
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .bind_addr
         .parse::<SocketAddr>()
         .with_context(|| format!("invalid BIND_ADDR {}", config.bind_addr))?;
-    let state = AppState::new(config);
+    let state = AppState::new(config).await?;
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;
 

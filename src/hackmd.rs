@@ -1,17 +1,15 @@
 use axum::{
     body::Body,
-    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
-use bytes::Bytes;
 use futures_util::TryStreamExt;
 use reqwest::Url;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum ProxyError {
-    #[error("HackMD API token is not configured")]
-    MissingHackmdToken,
+#[derive(Debug, thiserror::Error)]
+pub enum HackMdError {
+    #[error("HackMD API token is not configured for this user")]
+    MissingCredential,
     #[error("invalid upstream MCP URL")]
     InvalidUpstreamUrl(#[from] url::ParseError),
     #[error("failed to read MCP request body")]
@@ -20,17 +18,37 @@ pub enum ProxyError {
     Upstream(#[from] reqwest::Error),
 }
 
-impl IntoResponse for ProxyError {
+impl IntoResponse for HackMdError {
     fn into_response(self) -> Response {
         let status = match self {
-            Self::MissingHackmdToken => StatusCode::SERVICE_UNAVAILABLE,
+            Self::MissingCredential => StatusCode::FORBIDDEN,
             Self::InvalidUpstreamUrl(_) | Self::RequestBody(_) | Self::Upstream(_) => {
                 StatusCode::BAD_GATEWAY
             }
         };
-
-        tracing::warn!(error = %self, "mcp proxy request failed");
+        tracing::warn!(error = %self, "HackMD request failed");
         (status, self.to_string()).into_response()
+    }
+}
+
+pub async fn verify_token(
+    client: &reqwest::Client,
+    upstream_mcp_url: &str,
+    hackmd_api_token: &str,
+) -> Result<(), HackMdError> {
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"hackmd-mcp-proxy","version":"0.1.0"}}}"#;
+    let upstream = client
+        .post(upstream_mcp_url)
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .bearer_auth(hackmd_api_token)
+        .body(body)
+        .send()
+        .await?;
+    if upstream.status().is_success() {
+        Ok(())
+    } else {
+        Err(HackMdError::MissingCredential)
     }
 }
 
@@ -42,7 +60,7 @@ pub async fn proxy_mcp_request(
     uri: Uri,
     headers: HeaderMap,
     body: Body,
-) -> Result<Response, ProxyError> {
+) -> Result<Response, HackMdError> {
     let url = upstream_url(upstream_mcp_url, &uri)?;
     let body_bytes = axum::body::to_bytes(body, usize::MAX).await?;
     let mut request = client
@@ -125,31 +143,9 @@ pub fn bearer_challenge(resource_metadata_url: &str) -> Response {
     response
 }
 
-pub fn json_rpc_error(id: Option<serde_json::Value>, code: i64, message: &str) -> Response {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id.unwrap_or(serde_json::Value::Null),
-        "error": {
-            "code": code,
-            "message": message,
-        }
-    });
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        body.to_string(),
-    )
-        .into_response()
-}
-
-pub fn bytes_to_json_rpc_id(body: &Bytes) -> Option<serde_json::Value> {
-    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    value.get("id").cloned()
-}
-
 #[cfg(test)]
 mod tests {
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::{filtered_request_headers, filtered_response_headers};
 
