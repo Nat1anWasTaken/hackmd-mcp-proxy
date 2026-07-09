@@ -12,6 +12,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hackmd_mcp_proxy::{
     build_router,
     config::{Config, Environment, LogFormat},
+    hackmd::{JsonRpcRequest, handle_mcp_request},
     state::AppState,
     store::Store,
 };
@@ -243,7 +244,7 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_local_tools() -> anyhow
     assert_eq!(edit["error"], Value::Null);
     assert_eq!(
         edit["result"]["structuredContent"]["content"],
-        "# Title\nnew text\n"
+        "# Title\nnew text\nrepeated\nrepeated\n"
     );
 
     let requests = hackmd_requests.lock().await;
@@ -260,7 +261,10 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_local_tools() -> anyhow
         .iter()
         .find(|request| request.method == Method::PATCH && request.path == "/notes/note-1")
         .ok_or_else(|| anyhow::anyhow!("missing HackMD note patch request"))?;
-    assert_eq!(patch.body["content"], "# Title\nnew text\n");
+    assert_eq!(
+        patch.body["content"],
+        "# Title\nnew text\nrepeated\nrepeated\n"
+    );
 
     Ok(())
 }
@@ -291,6 +295,205 @@ async fn missing_mcp_bearer_returns_resource_challenge() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn edit_note_patch_errors_return_json_rpc_errors_without_upstream_patch() -> anyhow::Result<()>
+{
+    let hackmd_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
+    let upstream_url = spawn_mock_upstream(hackmd_requests.clone()).await?;
+
+    let cases = [
+        (
+            "missing begin",
+            "*** Update File: notes/note-1.md\n@@\n-old text\n+new text\n*** End Patch",
+            "patch must start with *** Begin Patch",
+        ),
+        (
+            "wrong target",
+            "*** Begin Patch\n*** Update File: notes/other.md\n@@\n-old text\n+new text\n*** End Patch",
+            "patch targets notes/other.md, expected notes/note-1.md",
+        ),
+        (
+            "missing context",
+            "*** Begin Patch\n*** Update File: notes/note-1.md\n@@\n-missing text\n+new text\n*** End Patch",
+            "patch hunk context was not found",
+        ),
+        (
+            "ambiguous context",
+            "*** Begin Patch\n*** Update File: notes/note-1.md\n@@\n-repeated\n+changed\n*** End Patch",
+            "patch hunk context matched multiple locations",
+        ),
+    ];
+
+    for (label, patch, expected_message) in cases {
+        hackmd_requests.lock().await.clear();
+
+        let response = call_mcp_tool(
+            &upstream_url,
+            "hackmd_edit_note",
+            serde_json::json!({
+                "note_id": "note-1",
+                "patch": patch
+            }),
+        )
+        .await?;
+
+        assert_eq!(response["result"], Value::Null, "{label}");
+        assert_eq!(response["error"]["code"], -32000, "{label}");
+        assert_eq!(response["error"]["message"], expected_message, "{label}");
+
+        let requests = hackmd_requests.lock().await;
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.method == Method::GET && request.path == "/notes/note-1"),
+            "{label}"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.method != Method::PATCH),
+            "{label}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn edit_note_routes_team_workspace_and_uses_team_patch_path() -> anyhow::Result<()> {
+    let hackmd_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
+    let upstream_url = spawn_mock_upstream(hackmd_requests.clone()).await?;
+
+    let response = call_mcp_tool(
+        &upstream_url,
+        "hackmd_edit_note",
+        serde_json::json!({
+            "workspace": { "kind": "team", "team_path": "core-team" },
+            "note_id": "note-1",
+            "patch": "*** Begin Patch\n*** Update File: teams/core-team/notes/note-1.md\n@@\n # Title\n-old text\n+team text\n*** End Patch"
+        }),
+    )
+    .await?;
+
+    assert_eq!(response["error"], Value::Null);
+    assert_eq!(
+        response["result"]["structuredContent"]["patch_path"],
+        "teams/core-team/notes/note-1.md"
+    );
+    assert_eq!(response["result"]["structuredContent"]["changed"], true);
+    assert_eq!(
+        response["result"]["structuredContent"]["content"],
+        "# Title\nteam text\nrepeated\nrepeated\n"
+    );
+
+    let requests = hackmd_requests.lock().await;
+    assert!(
+        requests.iter().any(|request| request.method == Method::GET
+            && request.path == "/teams/core-team/notes/note-1")
+    );
+    let patch = requests
+        .iter()
+        .find(|request| {
+            request.method == Method::PATCH && request.path == "/teams/core-team/notes/note-1"
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing team HackMD note patch request"))?;
+    assert_eq!(
+        patch.body["content"],
+        "# Title\nteam text\nrepeated\nrepeated\n"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn edit_note_noop_returns_unchanged_without_upstream_patch() -> anyhow::Result<()> {
+    let hackmd_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
+    let upstream_url = spawn_mock_upstream(hackmd_requests.clone()).await?;
+
+    let response = call_mcp_tool(
+        &upstream_url,
+        "hackmd_edit_note",
+        serde_json::json!({
+            "note_id": "note-1",
+            "patch": "*** Begin Patch\n*** Update File: notes/note-1.md\n@@\n # Title\n old text\n*** End Patch"
+        }),
+    )
+    .await?;
+
+    assert_eq!(response["error"], Value::Null);
+    assert_eq!(response["result"]["structuredContent"]["changed"], false);
+    assert_eq!(
+        response["result"]["structuredContent"]["content"],
+        "# Title\nold text\nrepeated\nrepeated\n"
+    );
+
+    let requests = hackmd_requests.lock().await;
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == Method::GET && request.path == "/notes/note-1")
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method != Method::PATCH)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_note_patches_metadata_and_rejects_empty_fields() -> anyhow::Result<()> {
+    let hackmd_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
+    let upstream_url = spawn_mock_upstream(hackmd_requests.clone()).await?;
+
+    let update = call_mcp_tool(
+        &upstream_url,
+        "hackmd_update_note",
+        serde_json::json!({
+            "note_id": "note-1",
+            "fields": {
+                "title": "Updated",
+                "tags": ["docs", "release"]
+            }
+        }),
+    )
+    .await?;
+
+    assert_eq!(update["error"], Value::Null);
+
+    let empty = call_mcp_tool(
+        &upstream_url,
+        "hackmd_update_note",
+        serde_json::json!({
+            "note_id": "note-1",
+            "fields": {}
+        }),
+    )
+    .await?;
+
+    assert_eq!(empty["result"], Value::Null);
+    assert_eq!(empty["error"]["code"], -32000);
+    assert_eq!(
+        empty["error"]["message"],
+        "invalid HackMD API request: fields must contain at least one note property"
+    );
+
+    let requests = hackmd_requests.lock().await;
+    let patch_requests = requests
+        .iter()
+        .filter(|request| request.method == Method::PATCH && request.path == "/notes/note-1")
+        .collect::<Vec<_>>();
+    assert_eq!(patch_requests.len(), 1);
+    assert_eq!(patch_requests[0].body["title"], "Updated");
+    assert_eq!(
+        patch_requests[0].body["tags"],
+        serde_json::json!(["docs", "release"])
+    );
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct RecordedRequest {
     method: Method,
@@ -306,6 +509,11 @@ async fn spawn_mock_upstream(requests: Arc<Mutex<Vec<RecordedRequest>>>) -> anyh
         .route("/me", get(hackmd_me))
         .route("/notes", get(list_notes).post(create_note))
         .route("/notes/{note_id}", any(note_item))
+        .route(
+            "/teams/{team_path}/notes",
+            get(list_notes).post(create_note),
+        )
+        .route("/teams/{team_path}/notes/{note_id}", any(team_note_item))
         .with_state(requests);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -424,7 +632,7 @@ async fn note_item(
         Method::GET => Json(serde_json::json!({
             "id": note_id,
             "title": "Title",
-            "content": "# Title\nold text\n",
+            "content": "# Title\nold text\nrepeated\nrepeated\n",
             "tags": ["docs"]
         }))
         .into_response(),
@@ -432,6 +640,37 @@ async fn note_item(
         Method::DELETE => StatusCode::NO_CONTENT.into_response(),
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
+}
+
+async fn team_note_item(
+    State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
+    Path((_team_path, note_id)): Path<(String, String)>,
+    uri: axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    note_item(State(requests), Path(note_id), uri, method, headers, body).await
+}
+
+async fn call_mcp_tool(upstream_url: &str, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    let response = handle_mcp_request(
+        &reqwest::Client::new(),
+        upstream_url,
+        "hackmd-secret",
+        JsonRpcRequest {
+            id: Some(serde_json::json!(1)),
+            jsonrpc: Some("2.0".to_owned()),
+            method: "tools/call".to_owned(),
+            params: Some(serde_json::json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        },
+    )
+    .await;
+
+    Ok(serde_json::to_value(response)?)
 }
 
 async fn register_client(app: &Router, redirect_uri: &str) -> anyhow::Result<String> {

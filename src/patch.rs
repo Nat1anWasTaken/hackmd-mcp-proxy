@@ -232,4 +232,85 @@ mod tests {
             Err(PatchError::UnsupportedOperation(_))
         ));
     }
+
+    #[test]
+    fn applies_multiple_hunks() -> Result<(), PatchError> {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n@@\n-one\n+1\n@@\n-three\n+3\n*** End Patch";
+
+        let output = apply_note_patch("one\ntwo\nthree\n", patch, "notes/a.md")?;
+
+        assert_eq!(output, "1\ntwo\n3\n");
+        Ok(())
+    }
+
+    #[test]
+    fn applies_delete_only_hunk() -> Result<(), PatchError> {
+        let patch =
+            "*** Begin Patch\n*** Update File: notes/a.md\n@@\n keep\n-remove\n end\n*** End Patch";
+
+        let output = apply_note_patch("keep\nremove\nend\n", patch, "notes/a.md")?;
+
+        assert_eq!(output, "keep\nend\n");
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_missing_trailing_newline() -> Result<(), PatchError> {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n@@\n-old\n+new\n*** End Patch";
+
+        let output = apply_note_patch("old", patch, "notes/a.md")?;
+
+        assert_eq!(output, "new");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_missing_begin() {
+        let patch = "*** Update File: notes/a.md\n@@\n-old\n+new\n*** End Patch";
+
+        assert_eq!(
+            apply_note_patch("old", patch, "notes/a.md"),
+            Err(PatchError::MissingBegin)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_end() {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n@@\n-old\n+new";
+
+        assert_eq!(
+            apply_note_patch("old", patch, "notes/a.md"),
+            Err(PatchError::MissingEnd)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_update_sections() {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n*** Update File: notes/a.md\n@@\n-old\n+new\n*** End Patch";
+
+        assert_eq!(
+            apply_note_patch("old", patch, "notes/a.md"),
+            Err(PatchError::InvalidUpdateCount)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_hunk() {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n-old\n+new\n*** End Patch";
+
+        assert_eq!(
+            apply_note_patch("old", patch, "notes/a.md"),
+            Err(PatchError::MissingHunk)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_line() {
+        let patch = "*** Begin Patch\n*** Update File: notes/a.md\n@@\nold\n*** End Patch";
+
+        assert_eq!(
+            apply_note_patch("old", patch, "notes/a.md"),
+            Err(PatchError::InvalidLine)
+        );
+    }
 }
