@@ -20,7 +20,7 @@ pub enum HackMdError {
     MissingCredential,
     #[error("invalid HackMD API URL")]
     InvalidApiUrl(#[from] url::ParseError),
-    #[error("invalid HackMD API request")]
+    #[error("invalid HackMD API request: {0}")]
     InvalidRequest(String),
     #[error("HackMD API request failed: {0}")]
     Api(String),
@@ -300,11 +300,13 @@ impl<'a> HackMdClient<'a> {
         let content = note_content(&note)?;
         let patch_path = patch_path(&input.workspace, &input.note_id);
         let updated_content = patch::apply_note_patch(&content, &input.patch, &patch_path)?;
-        self.patch(
-            &note_item_path(&input.workspace, &input.note_id),
-            json!({ "content": updated_content }),
-        )
-        .await?;
+        if updated_content != content {
+            self.patch(
+                &note_item_path(&input.workspace, &input.note_id),
+                json!({ "content": updated_content }),
+            )
+            .await?;
+        }
         Ok(EditNoteOutput {
             note_id: input.note_id,
             patch_path,
