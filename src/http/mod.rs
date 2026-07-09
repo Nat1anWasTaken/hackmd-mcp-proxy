@@ -1,12 +1,12 @@
 use axum::{
     Form, Json, Router,
     extract::{OriginalUri, Query, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, Method, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use url::{Url, form_urlencoded};
+use url::Url;
 
 use crate::{
     crypto::{decrypt_secret, encrypt_secret, fingerprint, hmac_sha256_hex, random_token},
@@ -16,10 +16,16 @@ use crate::{
         ScopeSet, localhost_redirects_allowed,
     },
     state::AppState,
-    store::{AuthorizeInput, ExchangeCodeInput, GitHubUser, StoreError},
+    store::{AuthorizeInput, ExchangeCodeInput},
 };
 
-const SESSION_COOKIE: &str = "hmcp_session";
+mod error;
+mod pages;
+mod session;
+
+use error::AppError;
+use pages::{render_settings, render_token_form};
+use session::{bearer_challenge, bearer_token, current_user, github_start_url, session_cookie};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -424,149 +430,6 @@ async fn issue_code_redirect(
     Ok(Redirect::to(redirect_url.as_str()).into_response())
 }
 
-async fn current_user(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Option<GitHubUser>, AppError> {
-    let Some(session_token) = cookie_value(headers, SESSION_COOKIE) else {
-        return Ok(None);
-    };
-    let session_hash = hmac_sha256_hex(&session_token, &state.config().session_hash_key);
-    Ok(state.store().validate_web_session(&session_hash).await?)
-}
-
-fn bearer_challenge(state: &AppState) -> Response {
-    hackmd::bearer_challenge(&format!(
-        "{}/.well-known/oauth-protected-resource",
-        state.config().public_base_url
-    ))
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-        .filter(|token| !token.is_empty())
-}
-
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-    for part in cookie.split(';') {
-        let (key, value) = part.trim().split_once('=')?;
-        if key == name {
-            return Some(value.to_owned());
-        }
-    }
-    None
-}
-
-fn session_cookie(token: &str, secure: bool) -> Result<HeaderValue, AppError> {
-    let secure_attr = if secure { "; Secure" } else { "" };
-    HeaderValue::from_str(&format!(
-        "{SESSION_COOKIE}={token}; HttpOnly{secure_attr}; SameSite=Lax; Path=/"
-    ))
-    .map_err(|_| AppError::Internal("invalid session cookie"))
-}
-
-fn github_start_url(return_to: &str) -> String {
-    let query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("return_to", return_to)
-        .finish();
-    format!("/auth/github/start?{query}")
-}
-
-fn render_token_form(user: &GitHubUser, return_to: &str, error: Option<&str>) -> String {
-    let error_html = error
-        .map(|error| format!(r#"<p class="error">{}</p>"#, escape_html(error)))
-        .unwrap_or_default();
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connect HackMD</title>
-  <style>{}</style>
-</head>
-<body>
-  <main>
-    <h1>Connect HackMD</h1>
-    <p>Signed in with GitHub as <strong>{}</strong>.</p>
-    <p>Paste a HackMD API token. It will be verified, encrypted, and stored for this GitHub user.</p>
-    {}
-    <form method="post" action="/hackmd/token">
-      <input type="hidden" name="return_to" value="{}">
-      <label>HackMD API Token
-        <input name="hackmd_api_token" type="password" autocomplete="off" required autofocus>
-      </label>
-      <button type="submit">Save and continue</button>
-    </form>
-  </main>
-</body>
-</html>"#,
-        page_css(),
-        escape_html(&user.github_login),
-        error_html,
-        escape_html(return_to)
-    )
-}
-
-fn render_settings(user: &GitHubUser, fingerprint: Option<&str>) -> String {
-    let status = fingerprint
-        .map(|fingerprint| {
-            format!(
-                "Connected. Token fingerprint: <code>{}</code>",
-                escape_html(fingerprint)
-            )
-        })
-        .unwrap_or_else(|| "Not connected.".to_owned());
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HackMD MCP Settings</title>
-  <style>{}</style>
-</head>
-<body>
-  <main>
-    <h1>HackMD MCP Settings</h1>
-    <p>Signed in with GitHub as <strong>{}</strong>.</p>
-    <p>{}</p>
-    <form method="post" action="/hackmd/token">
-      <input type="hidden" name="return_to" value="/settings">
-      <label>Update HackMD API Token
-        <input name="hackmd_api_token" type="password" autocomplete="off" required>
-      </label>
-      <button type="submit">Save token</button>
-    </form>
-    <form method="post" action="/settings/disconnect">
-      <button class="secondary" type="submit">Disconnect HackMD</button>
-    </form>
-  </main>
-</body>
-</html>"#,
-        page_css(),
-        escape_html(&user.github_login),
-        status
-    )
-}
-
-fn page_css() -> &'static str {
-    "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f7f7f5;color:#151515}main{max-width:560px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #ddd;border-radius:8px}label{display:block;margin:24px 0 12px;font-weight:600}input{display:block;width:100%;box-sizing:border-box;margin-top:8px;padding:10px;border:1px solid #aaa;border-radius:6px;font:inherit}button{padding:10px 14px;border:0;border-radius:6px;background:#166534;color:white;font:inherit;font-weight:600;cursor:pointer}.secondary{margin-top:16px;background:#555}.error{padding:10px 12px;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;color:#991b1b}code{background:#eee;padding:2px 5px;border-radius:4px}"
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -621,88 +484,4 @@ struct GitHubCallbackQuery {
 struct HackMdTokenForm {
     hackmd_api_token: String,
     return_to: String,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum AppError {
-    #[error("{0}")]
-    BadRequest(&'static str),
-    #[error("{0}")]
-    Internal(&'static str),
-    #[error(transparent)]
-    ClientRegistration(#[from] crate::oauth::ClientRegistrationError),
-    #[error(transparent)]
-    Scope(#[from] crate::oauth::ScopeError),
-    #[error(transparent)]
-    Store(#[from] StoreError),
-    #[error(transparent)]
-    Url(#[from] url::ParseError),
-    #[error(transparent)]
-    Crypto(#[from] crate::crypto::CryptoError),
-    #[error(transparent)]
-    GitHub(#[from] github::GitHubError),
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status = match self {
-            Self::BadRequest(_)
-            | Self::ClientRegistration(_)
-            | Self::Scope(_)
-            | Self::Store(StoreError::ClientNotFound)
-            | Self::Store(StoreError::RedirectUriMismatch)
-            | Self::Store(StoreError::ResourceMismatch)
-            | Self::Store(StoreError::InvalidAuthorizationCode)
-            | Self::Store(StoreError::ExpiredAuthorizationCode)
-            | Self::Store(StoreError::ConsumedAuthorizationCode)
-            | Self::Store(StoreError::Pkce(_))
-            | Self::Url(_) => StatusCode::BAD_REQUEST,
-            Self::Internal(_)
-            | Self::Store(StoreError::Sqlx(_))
-            | Self::Store(StoreError::Serde(_))
-            | Self::Crypto(_)
-            | Self::GitHub(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        if status.is_server_error() {
-            tracing::error!(error = %self, "request failed");
-        } else {
-            tracing::warn!(error = %self, "request rejected");
-        }
-        (status, self.to_string()).into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use axum::http::{HeaderMap, HeaderValue, header};
-
-    use super::{bearer_token, cookie_value, escape_html};
-
-    #[test]
-    fn extracts_bearer_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer abc"),
-        );
-        assert_eq!(bearer_token(&headers), Some("abc"));
-    }
-
-    #[test]
-    fn extracts_cookie_value() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::COOKIE,
-            HeaderValue::from_static("other=1; hmcp_session=abc; x=y"),
-        );
-        assert_eq!(
-            cookie_value(&headers, "hmcp_session").as_deref(),
-            Some("abc")
-        );
-    }
-
-    #[test]
-    fn escapes_html() {
-        assert_eq!(escape_html("<x>&\"'"), "&lt;x&gt;&amp;&quot;&#39;");
-    }
 }

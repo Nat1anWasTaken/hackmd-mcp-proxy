@@ -1,11 +1,11 @@
 pub mod config;
-pub mod crypto;
-pub mod github;
+mod crypto;
+mod github;
 pub mod hackmd;
+mod http;
 pub mod oauth;
 pub mod observability;
-pub mod patch;
-pub mod routes;
+mod patch;
 pub mod state;
 pub mod store;
 
@@ -16,7 +16,7 @@ use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
-        .merge(routes::router())
+        .merge(http::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
