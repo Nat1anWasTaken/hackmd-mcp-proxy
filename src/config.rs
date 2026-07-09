@@ -10,7 +10,7 @@ pub struct Config {
     pub database_url: String,
     pub environment: Environment,
     pub log_format: LogFormat,
-    pub upstream_mcp_url: String,
+    pub hackmd_api_url: String,
     pub github_client_id: String,
     pub github_client_secret: String,
     pub github_authorize_url: String,
@@ -52,7 +52,7 @@ impl Config {
         let database_url = env_var("DATABASE_URL", "sqlite://hackmd-mcp-proxy.db");
         let environment = Environment::parse(&env_var("APP_ENV", "development"))?;
         let log_format = LogFormat::parse(&env_var("LOG_FORMAT", "pretty"))?;
-        let upstream_mcp_url = env_var("HACKMD_MCP_URL", "https://mcp.hackmd.io");
+        let hackmd_api_url = env_var("HACKMD_API_URL", "https://api.hackmd.io/v1");
         let github_client_id = env_var("GITHUB_CLIENT_ID", "dev-github-client-id");
         let github_client_secret = env_var("GITHUB_CLIENT_SECRET", "dev-github-client-secret");
         let github_authorize_url = env_var(
@@ -102,7 +102,7 @@ impl Config {
             database_url,
             environment,
             log_format,
-            upstream_mcp_url: upstream_mcp_url.trim_end_matches('/').to_owned(),
+            hackmd_api_url: hackmd_api_url.trim_end_matches('/').to_owned(),
             github_client_id,
             github_client_secret,
             github_authorize_url,

@@ -4,6 +4,7 @@ pub mod github;
 pub mod hackmd;
 pub mod oauth;
 pub mod observability;
+pub mod patch;
 pub mod routes;
 pub mod state;
 pub mod store;

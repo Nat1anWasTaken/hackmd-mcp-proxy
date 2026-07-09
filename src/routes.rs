@@ -225,7 +225,7 @@ async fn save_hackmd_token(
     }
 
     if let Err(error) =
-        hackmd::verify_token(state.http_client(), &state.config().upstream_mcp_url, token).await
+        hackmd::verify_token(state.http_client(), &state.config().hackmd_api_url, token).await
     {
         tracing::warn!(github_user_id = user.github_id, %error, "HackMD token verification failed");
         return Ok(Html(render_token_form(
@@ -274,7 +274,6 @@ async fn disconnect(
 async fn mcp(
     State(state): State<AppState>,
     method: Method,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
@@ -323,20 +322,41 @@ async fn mcp(
         }
     };
 
-    match hackmd::proxy_mcp_request(
-        state.http_client(),
-        &state.config().upstream_mcp_url,
-        &hackmd_token,
-        method,
-        uri,
-        headers,
-        body,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
+    if method != Method::POST {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
+
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read MCP request body");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let request = match serde_json::from_slice::<hackmd::JsonRpcRequest>(&body_bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(%error, "invalid MCP JSON-RPC request");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": { "code": -32700, "message": "parse error" }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let response = hackmd::handle_mcp_request(
+        state.http_client(),
+        &state.config().hackmd_api_url,
+        &hackmd_token,
+        request,
+    )
+    .await;
+    Json(response).into_response()
 }
 
 async fn validate_authorize_query(

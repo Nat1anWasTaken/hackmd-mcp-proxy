@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     body::{Body, Bytes, to_bytes},
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, Method, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -23,9 +23,9 @@ use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
 #[tokio::test]
-async fn github_user_stores_hackmd_key_once_and_mcp_uses_it() -> anyhow::Result<()> {
-    let upstream_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
-    let upstream_url = spawn_mock_upstream(upstream_requests.clone()).await?;
+async fn github_user_stores_hackmd_key_once_and_mcp_uses_local_tools() -> anyhow::Result<()> {
+    let hackmd_requests = Arc::new(Mutex::new(Vec::<RecordedRequest>::new()));
+    let upstream_url = spawn_mock_upstream(hackmd_requests.clone()).await?;
     let config = test_config(upstream_url.clone());
     let store = Store::connect(&format!(
         "sqlite://target/test-{}.db",
@@ -157,10 +157,11 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_it() -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("missing access token"))?;
 
     let mcp_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/mcp?cursor=next")
+                .uri("/mcp")
                 .header(header::AUTHORIZATION, format!("Bearer {access_token}"))
                 .header(header::ACCEPT, "application/json, text/event-stream")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -170,22 +171,96 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_it() -> anyhow::Result<
                 ))?,
         )
         .await?;
-    assert_eq!(mcp_response.status(), StatusCode::ACCEPTED);
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    let tools = response_json(mcp_response).await?;
+    let tools_json = tools.to_string();
+    assert!(tools_json.contains("hackmd_edit_note"));
+    assert!(tools_json.contains("Prefer this over hackmd_update_note"));
+    assert!(tools_json.contains("Do not use for normal content edits"));
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {access_token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "hackmd_list_notes",
+                            "arguments": {
+                                "query": "title",
+                                "tags": ["docs"],
+                                "folder_id": "folder-1",
+                                "limit": 10
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))?,
+        )
+        .await?;
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list = response_json(list_response).await?;
+    assert_eq!(list["error"], Value::Null);
+    assert_eq!(list["result"]["structuredContent"]["total"], 1);
     assert_eq!(
-        mcp_response.headers().get("mcp-session-id"),
-        Some(&"upstream-session".parse()?)
+        list["result"]["structuredContent"]["notes"][0]["patch_path"],
+        "notes/note-1.md"
     );
 
-    let requests = upstream_requests.lock().await;
-    let proxied = requests
-        .iter()
-        .find(|request| request.query.as_deref() == Some("cursor=next"))
-        .ok_or_else(|| anyhow::anyhow!("missing proxied MCP request"))?;
+    let edit_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {access_token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "hackmd_edit_note",
+                            "arguments": {
+                                "note_id": "note-1",
+                                "patch": "*** Begin Patch\n*** Update File: notes/note-1.md\n@@\n # Title\n-old text\n+new text\n*** End Patch"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))?,
+        )
+        .await?;
+    assert_eq!(edit_response.status(), StatusCode::OK);
+    let edit = response_json(edit_response).await?;
+    assert_eq!(edit["error"], Value::Null);
     assert_eq!(
-        proxied.headers.get(header::AUTHORIZATION),
+        edit["result"]["structuredContent"]["content"],
+        "# Title\nnew text\n"
+    );
+
+    let requests = hackmd_requests.lock().await;
+    let verify = requests
+        .iter()
+        .find(|request| request.path == "/me")
+        .ok_or_else(|| anyhow::anyhow!("missing HackMD token verification request"))?;
+    assert_eq!(
+        verify.headers.get(header::AUTHORIZATION),
         Some(&"Bearer hackmd-secret".parse()?)
     );
-    assert!(!proxied.headers.contains_key(header::COOKIE));
+
+    let patch = requests
+        .iter()
+        .find(|request| request.method == Method::PATCH && request.path == "/notes/note-1")
+        .ok_or_else(|| anyhow::anyhow!("missing HackMD note patch request"))?;
+    assert_eq!(patch.body["content"], "# Title\nnew text\n");
 
     Ok(())
 }
@@ -218,15 +293,19 @@ async fn missing_mcp_bearer_returns_resource_challenge() -> anyhow::Result<()> {
 
 #[derive(Debug)]
 struct RecordedRequest {
-    query: Option<String>,
+    method: Method,
+    path: String,
     headers: HeaderMap,
+    body: Value,
 }
 
 async fn spawn_mock_upstream(requests: Arc<Mutex<Vec<RecordedRequest>>>) -> anyhow::Result<String> {
     let app = Router::new()
         .route("/login/oauth/access_token", post(github_token))
         .route("/user", get(github_user))
-        .route("/mcp", any(mock_hackmd))
+        .route("/me", get(hackmd_me))
+        .route("/notes", get(list_notes).post(create_note))
+        .route("/notes/{note_id}", any(note_item))
         .with_state(requests);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -249,28 +328,110 @@ async fn github_user() -> Json<Value> {
 async fn mock_hackmd(
     State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
     uri: axum::http::Uri,
+    method: Method,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let _ = body;
     requests.lock().await.push(RecordedRequest {
-        query: uri.query().map(ToOwned::to_owned),
+        method,
+        path: uri.path().to_owned(),
         headers,
+        body: serde_json::from_slice(&body).unwrap_or(Value::Null),
     });
 
-    (
-        StatusCode::ACCEPTED,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            (header::SET_COOKIE, "upstream=secret"),
-            (
-                header::HeaderName::from_static("mcp-session-id"),
-                "upstream-session",
-            ),
-        ],
-        r#"{"ok":true}"#,
-    )
-        .into_response()
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+async fn hackmd_me(
+    State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
+    uri: axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    requests.lock().await.push(RecordedRequest {
+        method,
+        path: uri.path().to_owned(),
+        headers,
+        body: Value::Null,
+    });
+
+    Json(serde_json::json!({
+        "id": "user-1",
+        "name": "Octocat",
+        "userPath": "octocat",
+        "photo": "",
+        "email": null,
+        "teams": [],
+        "upgraded": false
+    }))
+    .into_response()
+}
+
+async fn list_notes(
+    State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
+    uri: axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    requests.lock().await.push(RecordedRequest {
+        method,
+        path: uri.path().to_owned(),
+        headers,
+        body: Value::Null,
+    });
+
+    Json(serde_json::json!([
+        {
+            "id": "note-1",
+            "shortId": "short-1",
+            "title": "Title",
+            "description": "Description",
+            "tags": ["docs"],
+            "createdAt": 1,
+            "lastChangedAt": 2,
+            "folderPaths": [{ "id": "folder-1" }]
+        }
+    ]))
+    .into_response()
+}
+
+async fn create_note(
+    State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
+    uri: axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    mock_hackmd(State(requests), uri, method, headers, body).await
+}
+
+async fn note_item(
+    State(requests): State<Arc<Mutex<Vec<RecordedRequest>>>>,
+    Path(note_id): Path<String>,
+    uri: axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    requests.lock().await.push(RecordedRequest {
+        method: method.clone(),
+        path: uri.path().to_owned(),
+        headers,
+        body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+    });
+
+    match method {
+        Method::GET => Json(serde_json::json!({
+            "id": note_id,
+            "title": "Title",
+            "content": "# Title\nold text\n",
+            "tags": ["docs"]
+        }))
+        .into_response(),
+        Method::PATCH => Json(serde_json::json!({ "ok": true })).into_response(),
+        Method::DELETE => StatusCode::NO_CONTENT.into_response(),
+        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    }
 }
 
 async fn register_client(app: &Router, redirect_uri: &str) -> anyhow::Result<String> {
@@ -348,7 +509,7 @@ fn test_config(upstream_url: String) -> Config {
         database_url: "sqlite::memory:".to_owned(),
         environment: Environment::Test,
         log_format: LogFormat::Pretty,
-        upstream_mcp_url: format!("{upstream_url}/mcp"),
+        hackmd_api_url: upstream_url.clone(),
         github_client_id: "github-client".to_owned(),
         github_client_secret: "github-secret".to_owned(),
         github_authorize_url: format!("{upstream_url}/login/oauth/authorize"),
