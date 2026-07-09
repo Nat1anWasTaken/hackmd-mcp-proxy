@@ -178,6 +178,42 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_local_tools() -> anyhow
     assert!(tools_json.contains("hackmd_edit_note"));
     assert!(tools_json.contains("Prefer this over hackmd_update_note"));
     assert!(tools_json.contains("Do not use for normal content edits"));
+    let listed_tools = &tools["result"]["tools"]
+        .as_array()
+        .expect("tools list missing")[..];
+    let annotations = |name: &str| {
+        listed_tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tool definition missing: {name}"))["annotations"]
+            .as_object()
+            .expect("annotations missing")
+    };
+
+    let expect_flags = |name: &str, read_only_hint: bool, destructive_hint: bool| {
+        let annotations = annotations(name);
+        assert_eq!(
+            annotations["readOnlyHint"].as_bool(),
+            Some(read_only_hint),
+            "{name} readOnlyHint mismatch"
+        );
+        assert_eq!(
+            annotations["destructiveHint"].as_bool(),
+            Some(destructive_hint),
+            "{name} destructiveHint mismatch"
+        );
+    };
+
+    expect_flags("hackmd_list_notes", true, false);
+    expect_flags("hackmd_get_note", true, false);
+    expect_flags("hackmd_create_note", false, false);
+    expect_flags("hackmd_edit_note", false, false);
+    expect_flags("hackmd_update_note", false, false);
+    expect_flags("hackmd_delete_note", false, true);
+    expect_flags("hackmd_list_folders", true, false);
+    expect_flags("hackmd_create_folder", false, false);
+    expect_flags("hackmd_update_folder", false, false);
+    expect_flags("hackmd_delete_folder", false, true);
 
     let list_response = app
         .clone()
