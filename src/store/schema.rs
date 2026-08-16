@@ -63,6 +63,16 @@ impl Store {
                 expires_at INTEGER NOT NULL,
                 revoked_at INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+                token_hash TEXT PRIMARY KEY,
+                github_user_id INTEGER NOT NULL REFERENCES github_users(github_id) ON DELETE CASCADE,
+                client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+                resource TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER
+            );
             "#,
         )
         .execute(&self.pool)

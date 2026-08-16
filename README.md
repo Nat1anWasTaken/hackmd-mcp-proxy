@@ -16,6 +16,8 @@ HackMD's REST API, so agents use the same tools for personal and team notes.
 5. ChatGPT receives an authorization code and exchanges it at `POST /token`.
 6. Later `POST /mcp` calls use ChatGPT's proxy access token. The proxy decrypts
    the GitHub user's HackMD key and handles MCP JSON-RPC locally.
+7. ChatGPT rotates the OAuth refresh token to renew its short-lived access token
+   without asking the user to reconnect.
 
 ## Tools
 

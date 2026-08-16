@@ -63,6 +63,16 @@ pub struct ExchangeCodeInput<'a> {
     pub code_hash_key: &'a str,
     pub access_token_hash_key: &'a str,
     pub access_token_ttl: Duration,
+    pub refresh_token_ttl: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefreshTokenInput<'a> {
+    pub refresh_token: &'a str,
+    pub client_id: &'a str,
+    pub token_hash_key: &'a str,
+    pub access_token_ttl: Duration,
+    pub refresh_token_ttl: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +81,7 @@ pub struct IssuedAccessToken {
     pub token_type: &'static str,
     pub expires_in: u64,
     pub scope: String,
+    pub refresh_token: String,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +105,8 @@ pub enum StoreError {
     ExpiredAuthorizationCode,
     #[error("authorization code was already consumed")]
     ConsumedAuthorizationCode,
+    #[error("refresh token is invalid, expired, or already used")]
+    InvalidRefreshToken,
     #[error(transparent)]
     Pkce(#[from] crate::oauth::PkceError),
     #[error(transparent)]

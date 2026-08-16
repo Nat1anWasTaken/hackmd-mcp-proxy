@@ -153,9 +153,48 @@ async fn github_user_stores_hackmd_key_once_and_mcp_uses_local_tools() -> anyhow
         .await?;
     assert_eq!(token_response.status(), StatusCode::OK);
     let token = response_json(token_response).await?;
-    let access_token = token["access_token"]
+    let original_access_token = token["access_token"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing access token"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing access token"))?
+        .to_owned();
+    let refresh_token = token["refresh_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing refresh token"))?;
+
+    let refresh_form = form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "refresh_token")
+        .append_pair("client_id", &client_id)
+        .append_pair("refresh_token", refresh_token)
+        .finish();
+    let refresh_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(refresh_form.clone()))?,
+        )
+        .await?;
+    assert_eq!(refresh_response.status(), StatusCode::OK);
+    let refreshed = response_json(refresh_response).await?;
+    let access_token = refreshed["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing refreshed access token"))?;
+    assert_ne!(access_token, original_access_token);
+    assert_ne!(refreshed["refresh_token"], token["refresh_token"]);
+
+    let reused_refresh_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(refresh_form))?,
+        )
+        .await?;
+    assert_eq!(reused_refresh_response.status(), StatusCode::BAD_REQUEST);
 
     let mcp_response = app
         .clone()
@@ -798,6 +837,7 @@ fn test_config(upstream_url: String) -> Config {
         connect_timeout: Duration::from_secs(1),
         request_timeout: Duration::from_secs(5),
         access_token_ttl: Duration::from_secs(3600),
+        refresh_token_ttl: Duration::from_secs(30 * 24 * 3600),
         authorization_code_ttl: Duration::from_secs(300),
         web_session_ttl: Duration::from_secs(3600),
         github_state_ttl: Duration::from_secs(300),

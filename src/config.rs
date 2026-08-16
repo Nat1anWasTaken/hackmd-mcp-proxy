@@ -24,6 +24,7 @@ pub struct Config {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
     pub access_token_ttl: Duration,
+    pub refresh_token_ttl: Duration,
     pub authorization_code_ttl: Duration,
     pub web_session_ttl: Duration,
     pub github_state_ttl: Duration,
@@ -74,6 +75,7 @@ impl Config {
         let connect_timeout = duration_seconds("UPSTREAM_CONNECT_TIMEOUT_SECONDS", 10)?;
         let request_timeout = duration_seconds("UPSTREAM_REQUEST_TIMEOUT_SECONDS", 30)?;
         let access_token_ttl = duration_seconds("ACCESS_TOKEN_TTL_SECONDS", 3600)?;
+        let refresh_token_ttl = duration_seconds("REFRESH_TOKEN_TTL_SECONDS", 60 * 60 * 24 * 30)?;
         let authorization_code_ttl = duration_seconds("AUTH_CODE_TTL_SECONDS", 300)?;
         let web_session_ttl = duration_seconds("WEB_SESSION_TTL_SECONDS", 60 * 60 * 24 * 30)?;
         let github_state_ttl = duration_seconds("GITHUB_STATE_TTL_SECONDS", 600)?;
@@ -116,6 +118,7 @@ impl Config {
             connect_timeout,
             request_timeout,
             access_token_ttl,
+            refresh_token_ttl,
             authorization_code_ttl,
             web_session_ttl,
             github_state_ttl,

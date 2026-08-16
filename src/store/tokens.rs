@@ -3,8 +3,8 @@ use std::time::Duration;
 use sqlx::Row;
 
 use super::{
-    AccessTokenContext, AuthorizeInput, ExchangeCodeInput, IssuedAccessToken, IssuedCode, Store,
-    StoreError, now,
+    AccessTokenContext, AuthorizeInput, ExchangeCodeInput, IssuedAccessToken, IssuedCode,
+    RefreshTokenInput, Store, StoreError, now,
 };
 use crate::{
     crypto::{hmac_sha256_hex, random_token},
@@ -110,7 +110,11 @@ impl Store {
 
         let token = random_token();
         let token_hash = hmac_sha256_hex(&token, input.access_token_hash_key);
+        let refresh_token = random_token();
+        let refresh_token_hash = hmac_sha256_hex(&refresh_token, input.access_token_hash_key);
         let scope: String = row.try_get("scopes")?;
+        let github_user_id = row.get::<i64, _>("github_user_id");
+        let resource = row.get::<String, _>("resource");
         sqlx::query(
             r#"
             INSERT INTO oauth_access_tokens (
@@ -119,11 +123,27 @@ impl Store {
             "#,
         )
         .bind(&token_hash)
-        .bind(row.get::<i64, _>("github_user_id"))
+        .bind(github_user_id)
         .bind(&client_id)
-        .bind(row.get::<String, _>("resource"))
+        .bind(&resource)
         .bind(&scope)
         .bind(now() + input.access_token_ttl.as_secs() as i64)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO oauth_refresh_tokens (
+                token_hash, github_user_id, client_id, resource, scopes, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(refresh_token_hash)
+        .bind(github_user_id)
+        .bind(&client_id)
+        .bind(resource)
+        .bind(&scope)
+        .bind(now() + input.refresh_token_ttl.as_secs() as i64)
         .execute(&self.pool)
         .await?;
 
@@ -132,6 +152,95 @@ impl Store {
             token_type: "Bearer",
             expires_in: input.access_token_ttl.as_secs(),
             scope,
+            refresh_token,
+        })
+    }
+
+    pub async fn refresh_access_token(
+        &self,
+        input: RefreshTokenInput<'_>,
+    ) -> Result<IssuedAccessToken, StoreError> {
+        let old_hash = hmac_sha256_hex(input.refresh_token, input.token_hash_key);
+        let mut transaction = self.pool.begin().await?;
+        let Some(row) = sqlx::query(
+            r#"
+            SELECT github_user_id, client_id, resource, scopes, expires_at, revoked_at
+            FROM oauth_refresh_tokens
+            WHERE token_hash = ?
+            "#,
+        )
+        .bind(&old_hash)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            return Err(StoreError::InvalidRefreshToken);
+        };
+
+        let client_id: String = row.try_get("client_id")?;
+        let expires_at: i64 = row.try_get("expires_at")?;
+        let revoked_at: Option<i64> = row.try_get("revoked_at")?;
+        if client_id != input.client_id || expires_at <= now() || revoked_at.is_some() {
+            return Err(StoreError::InvalidRefreshToken);
+        }
+
+        let rotated = sqlx::query(
+            "UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+        )
+        .bind(now())
+        .bind(&old_hash)
+        .execute(&mut *transaction)
+        .await?;
+        if rotated.rows_affected() != 1 {
+            return Err(StoreError::InvalidRefreshToken);
+        }
+
+        let github_user_id: i64 = row.try_get("github_user_id")?;
+        let resource: String = row.try_get("resource")?;
+        let scope: String = row.try_get("scopes")?;
+        let access_token = random_token();
+        let access_hash = hmac_sha256_hex(&access_token, input.token_hash_key);
+        let refresh_token = random_token();
+        let refresh_hash = hmac_sha256_hex(&refresh_token, input.token_hash_key);
+
+        sqlx::query(
+            r#"
+            INSERT INTO oauth_access_tokens (
+                token_hash, github_user_id, client_id, resource, scopes, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(access_hash)
+        .bind(github_user_id)
+        .bind(&client_id)
+        .bind(&resource)
+        .bind(&scope)
+        .bind(now() + input.access_token_ttl.as_secs() as i64)
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO oauth_refresh_tokens (
+                token_hash, github_user_id, client_id, resource, scopes, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(refresh_hash)
+        .bind(github_user_id)
+        .bind(client_id)
+        .bind(resource)
+        .bind(&scope)
+        .bind(now() + input.refresh_token_ttl.as_secs() as i64)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        Ok(IssuedAccessToken {
+            access_token,
+            token_type: "Bearer",
+            expires_in: input.access_token_ttl.as_secs(),
+            scope,
+            refresh_token,
         })
     }
 
@@ -172,6 +281,20 @@ impl Store {
     pub async fn revoke_access_token(&self, token: &str, hash_key: &str) -> Result<(), StoreError> {
         let token_hash = hmac_sha256_hex(token, hash_key);
         sqlx::query("UPDATE oauth_access_tokens SET revoked_at = ? WHERE token_hash = ?")
+            .bind(now())
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn revoke_refresh_token(
+        &self,
+        token: &str,
+        hash_key: &str,
+    ) -> Result<(), StoreError> {
+        let token_hash = hmac_sha256_hex(token, hash_key);
+        sqlx::query("UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE token_hash = ?")
             .bind(now())
             .bind(token_hash)
             .execute(&self.pool)

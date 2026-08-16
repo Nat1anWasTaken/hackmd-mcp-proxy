@@ -37,6 +37,7 @@ impl IntoResponse for AppError {
             | Self::Store(StoreError::InvalidAuthorizationCode)
             | Self::Store(StoreError::ExpiredAuthorizationCode)
             | Self::Store(StoreError::ConsumedAuthorizationCode)
+            | Self::Store(StoreError::InvalidRefreshToken)
             | Self::Store(StoreError::Pkce(_))
             | Self::Url(_) => StatusCode::BAD_REQUEST,
             Self::Internal(_)

@@ -16,7 +16,7 @@ use crate::{
         ScopeSet, localhost_redirects_allowed,
     },
     state::AppState,
-    store::{AuthorizeInput, ExchangeCodeInput},
+    store::{AuthorizeInput, ExchangeCodeInput, RefreshTokenInput},
 };
 
 mod error;
@@ -107,29 +107,55 @@ async fn token(
     State(state): State<AppState>,
     Form(request): Form<TokenRequest>,
 ) -> Result<Json<TokenResponse>, AppError> {
-    if request.grant_type != "authorization_code" {
-        return Err(AppError::BadRequest(
-            "grant_type must be authorization_code",
-        ));
-    }
-    let issued = state
-        .store()
-        .exchange_code(ExchangeCodeInput {
-            code: &request.code,
-            client_id: &request.client_id,
-            redirect_uri: &request.redirect_uri,
-            code_verifier: &request.code_verifier,
-            code_hash_key: &state.config().oauth_authorization_code_hash_key,
-            access_token_hash_key: &state.config().oauth_access_token_hash_key,
-            access_token_ttl: state.config().access_token_ttl,
-        })
-        .await?;
+    let issued = match request.grant_type.as_str() {
+        "authorization_code" => {
+            state
+                .store()
+                .exchange_code(ExchangeCodeInput {
+                    code: request
+                        .code
+                        .as_deref()
+                        .ok_or(AppError::BadRequest("missing code"))?,
+                    client_id: &request.client_id,
+                    redirect_uri: request
+                        .redirect_uri
+                        .as_deref()
+                        .ok_or(AppError::BadRequest("missing redirect_uri"))?,
+                    code_verifier: request
+                        .code_verifier
+                        .as_deref()
+                        .ok_or(AppError::BadRequest("missing code_verifier"))?,
+                    code_hash_key: &state.config().oauth_authorization_code_hash_key,
+                    access_token_hash_key: &state.config().oauth_access_token_hash_key,
+                    access_token_ttl: state.config().access_token_ttl,
+                    refresh_token_ttl: state.config().refresh_token_ttl,
+                })
+                .await?
+        }
+        "refresh_token" => {
+            state
+                .store()
+                .refresh_access_token(RefreshTokenInput {
+                    refresh_token: request
+                        .refresh_token
+                        .as_deref()
+                        .ok_or(AppError::BadRequest("missing refresh_token"))?,
+                    client_id: &request.client_id,
+                    token_hash_key: &state.config().oauth_access_token_hash_key,
+                    access_token_ttl: state.config().access_token_ttl,
+                    refresh_token_ttl: state.config().refresh_token_ttl,
+                })
+                .await?
+        }
+        _ => return Err(AppError::BadRequest("unsupported grant_type")),
+    };
 
     Ok(Json(TokenResponse {
         access_token: issued.access_token,
         token_type: issued.token_type,
         expires_in: issued.expires_in,
         scope: issued.scope,
+        refresh_token: issued.refresh_token,
     }))
 }
 
@@ -140,6 +166,13 @@ async fn revoke(State(state): State<AppState>, Form(request): Form<RevokeRequest
         .await
     {
         tracing::warn!(%error, "failed to revoke access token");
+    }
+    if let Err(error) = state
+        .store()
+        .revoke_refresh_token(&request.token, &state.config().oauth_access_token_hash_key)
+        .await
+    {
+        tracing::warn!(%error, "failed to revoke refresh token");
     }
     StatusCode::OK
 }
@@ -450,10 +483,11 @@ struct AuthorizeQuery {
 #[derive(Debug, Deserialize)]
 struct TokenRequest {
     grant_type: String,
-    code: String,
-    redirect_uri: String,
     client_id: String,
-    code_verifier: String,
+    code: Option<String>,
+    redirect_uri: Option<String>,
+    code_verifier: Option<String>,
+    refresh_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -462,6 +496,7 @@ struct TokenResponse {
     token_type: &'static str,
     expires_in: u64,
     scope: String,
+    refresh_token: String,
 }
 
 #[derive(Debug, Deserialize)]

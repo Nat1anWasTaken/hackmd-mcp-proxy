@@ -110,7 +110,7 @@ impl OAuthClient {
             client_name: self.client_name.clone(),
             redirect_uris: self.redirect_uris.clone(),
             token_endpoint_auth_method: self.token_endpoint_auth_method.clone(),
-            grant_types: vec!["authorization_code"],
+            grant_types: vec!["authorization_code", "refresh_token"],
             response_types: vec!["code"],
         }
     }
@@ -207,7 +207,7 @@ impl AuthorizationServerMetadata {
             registration_endpoint: format!("{}/register", config.public_base_url),
             revocation_endpoint: format!("{}/revoke", config.public_base_url),
             response_types_supported: vec!["code"],
-            grant_types_supported: vec!["authorization_code"],
+            grant_types_supported: vec!["authorization_code", "refresh_token"],
             code_challenge_methods_supported: vec!["S256"],
             token_endpoint_auth_methods_supported: vec!["none"],
             scopes_supported: SUPPORTED_SCOPES.to_vec(),
